@@ -314,6 +314,7 @@ impl CachePermission {
     /// Adds implicit grants for public caches.
     pub fn add_public_permissions(&mut self) {
         self.pull = true;
+        self.push = true;
     }
 
     /// Returns whether the user is allowed to discover this cache.
