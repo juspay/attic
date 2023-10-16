@@ -204,9 +204,18 @@ impl ErrorKind {
         match self {
             Self::AccessError(super::access::Error::NoDiscoveryPermission) => Self::Unauthorized,
 
-            Self::DatabaseError(_) => Self::InternalServerError,
-            Self::StorageError(_) => Self::InternalServerError,
-            Self::ManifestSerializationError(_) => Self::InternalServerError,
+            Self::DatabaseError(err) => {
+                println!("Error: {:?}",err.to_string());
+                Self::InternalServerError
+            },
+            Self::StorageError(err) => {
+                println!("Error: {:?}",err.to_string());
+                Self::InternalServerError
+            },
+            Self::ManifestSerializationError(err) => {
+                println!("Error: {:?}",err.to_string());
+                Self::InternalServerError
+            },
 
             _ => self,
         }
