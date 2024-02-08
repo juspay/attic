@@ -7,6 +7,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_compression::Level as CompressionLevel;
+use aws_sdk_kms::primitives::Blob;
+use aws_sdk_kms::Client;
+use aws_types::region::Region;
+use base64::engine::general_purpose;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use derivative::Derivative;
 use serde::{de, Deserialize};
@@ -31,6 +35,15 @@ const ENV_TOKEN_HS256_SECRET_BASE64: &str = "ATTIC_SERVER_TOKEN_HS256_SECRET_BAS
 
 /// Environment variable storing the database connection string.
 const ENV_DATABASE_URL: &str = "ATTIC_SERVER_DATABASE_URL";
+
+/// Environment variable storing the database type.
+const ENV_DATABASE_TYPE: &str = "ATTIC_SERVER_DATABASE_TYPE";
+const ENV_DATABASE_USER_NAME: &str = "ATTIC_SERVER_DATABASE_USER_NAME";
+const ENV_DATABASE_USER_PASSWORD: &str = "ATTIC_SERVER_DATABASE_USER_PASSWORD";
+const ENV_DATABASE_HOSTNAME: &str = "ATTIC_SERVER_DATABASE_HOSTNAME";
+const ENV_DATABASE_PORT: &str = "ATTIC_SERVER_DATABASE_PORT";
+const ENV_DATABASE_DATABASE_NAME: &str = "ATTIC_SERVER_DATABASE_DATABASE_NAME";
+const ENV_DATABASE_PASSWORD_KMS_ENCRYPTED: &str = "ATTIC_SERVER_DATABASE_PASSWORD_KMS_ENCRYPTED";
 
 /// Configuration for the Attic Server.
 #[derive(Clone, Derivative, Deserialize)]
@@ -247,9 +260,77 @@ fn load_token_hs256_secret_from_env() -> HS256Key {
     decode_token_hs256_secret_base64(&s).expect("Failed to load as decoding key")
 }
 
-fn load_database_url_from_env() -> String {
-    env::var(ENV_DATABASE_URL)
-        .expect("Database URL must be specified in either database.url or the ATTIC_SERVER_DATABASE_URL environment.")
+async fn get_kms_decrypted_password(password_text_blob: Blob) -> String {
+    let region = match env::var("AWS_REGION") {
+        Ok(val) => Some(Region::new(val)),
+        _ => Some(Region::new("ap-south-1")),
+    };
+    let shared_config = aws_config::load_from_env().await;
+    let config = aws_sdk_kms::config::Builder::from(&shared_config)
+        .region(region)
+        .build();
+    let resp = Client::from_conf(config)
+        .decrypt()
+        .key_id("key")
+        .ciphertext_blob(password_text_blob)
+        .send()
+        .await
+        .expect("");
+
+    let inner = resp.plaintext.unwrap();
+    let bytes = inner.as_ref();
+    String::from_utf8(bytes.to_vec()).expect("Could not convert to UTF-8")
+}
+
+#[::tokio::main]
+async fn load_database_url_from_env() -> String {
+    let database_type = match env::var(ENV_DATABASE_TYPE) {
+        Ok(val) => val,
+        _ => "sqlite".to_string(),
+    };
+
+    if database_type.to_lowercase() == "postgresql" {
+        let user = env::var(ENV_DATABASE_USER_NAME).expect("missing ENV_DATABASE_USER_NAME ENV");
+        let true_str = "true".to_string();
+        let password_decrypted = match env::var(ENV_DATABASE_PASSWORD_KMS_ENCRYPTED) {
+            Ok(str) => {
+                if true_str == str.to_lowercase() {
+                    let password_base64_encoded = env::var(ENV_DATABASE_USER_PASSWORD)
+                        .expect("missing ENV_DATABASE_USER_PASSWORD ENV");
+                    let password_text_bas64_decoded = general_purpose::STANDARD
+                        .decode(password_base64_encoded)
+                        .expect("Input file does not contain valid base 64 characters.");
+                    let password_text_blob = Blob::new(password_text_bas64_decoded);
+                    get_kms_decrypted_password(password_text_blob).await
+                } else {
+                    env::var(ENV_DATABASE_USER_PASSWORD)
+                        .expect("missing ENV_DATABASE_USER_PASSWORD ENV")
+                }
+            }
+            _ => env::var(ENV_DATABASE_USER_PASSWORD)
+                .expect("missing ENV_DATABASE_USER_PASSWORD ENV"),
+        };
+        let hostname = env::var(ENV_DATABASE_HOSTNAME).expect("missing ENV_DATABASE_HOSTNAME ENV");
+        let port = match env::var(ENV_DATABASE_PORT) {
+            Ok(val) => val,
+            _ => "5432".to_string(),
+        };
+        let database_name =
+            env::var(ENV_DATABASE_DATABASE_NAME).expect("missing ENV_DATABASE_DATABASE_NAME ENV");
+        "postgres://".to_owned()
+            + &user
+            + ":"
+            + &password_decrypted
+            + "@"
+            + &hostname
+            + ":"
+            + &port
+            + "/"
+            + &database_name
+    } else {
+        env::var(ENV_DATABASE_URL)
+                .expect("Database URL must be specified in either database.url or the ATTIC_SERVER_DATABASE_URL environment.")
+    }
 }
 
 impl CompressionConfig {
