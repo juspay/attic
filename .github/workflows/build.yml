@@ -1,85 +1,49 @@
-name: Build
+name: Rust
+
 on:
-  pull_request:
   push:
+    branches: 
+      - '*'
+  pull_request:
+    branches: 
+      - '*'
+
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  CARGO_TERM_COLOR: always
+
 jobs:
-  tests:
-    strategy:
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-11
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      packages: write
+  build-ubuntu:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3.3.0
-
-      - uses: DeterminateSystems/nix-installer-action@v1
-        continue-on-error: true # Self-hosted runners already have Nix installed
-
-      - name: Install Attic
-        run: |
-          if ! command -v attic &> /dev/null; then
-            ./.github/install-attic-ci.sh
-          fi
-
-      - name: Configure Attic
-        run: |
-          : "${ATTIC_SERVER:=https://staging.attic.rs/}"
-          : "${ATTIC_CACHE:=attic-ci}"
-          echo ATTIC_CACHE=$ATTIC_CACHE >>$GITHUB_ENV
-          export PATH=$HOME/.nix-profile/bin:$PATH # FIXME
-          attic login --set-default ci "$ATTIC_SERVER" "$ATTIC_TOKEN"
-          attic use "$ATTIC_CACHE"
-        env:
-          ATTIC_SERVER: ${{ secrets.ATTIC_SERVER }}
-          ATTIC_CACHE: ${{ secrets.ATTIC_CACHE }}
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
-
-      - name: Build and run tests
-        run: |
-          system=$(nix-instantiate --eval -E 'builtins.currentSystem')
-          echo system=$system >>$GITHUB_ENV
-          tests=$(nix build .#internal."$system".attic-tests --no-link --print-out-paths -L)
-          find "$tests/bin" -exec {} \;
-
-      # TODO: Just take a diff of the list of store paths, also abstract all of this out
-      - name: Push build artifacts
-        run: |
-          export PATH=$HOME/.nix-profile/bin:$PATH # FIXME
-          if [ -n "$ATTIC_TOKEN" ]; then
-            nix build .#internal."$system".attic-tests .#internal."$system".cargoArtifacts --no-link --print-out-paths -L | \
-              xargs attic push "ci:$ATTIC_CACHE"
-          fi
-      - name: Log in to the Container registry
-        uses: docker/login-action@f054a8b539a109f9f41c372932f1ae047eff08c9
-        if: runner.os == 'Linux' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      - uses: actions/checkout@v3
+      - uses: cachix/install-nix-action@v20
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - run: nix build -vL
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: attic-ubuntu
+          path: |
+            result/bin/attic
+            result/bin/atticadm
+            result/bin/atticd
 
-      - name: Push build container image
-        if: runner.os == 'Linux' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        continue-on-error: true
-        run: |
-          IMAGE_ID=ghcr.io/${IMAGE_NAME}
-          TARBALL=$(nix build --json .#attic-server-image | jq -r '.[].outputs.out')
-          BRANCH=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
-          TAG="${{ github.sha }}"
-          [[ "${{ github.ref }}" == "refs/tags/"* ]] && TAG=$(echo $BRANCH | sed -e 's/^v//')
-          docker load < ${TARBALL}
-          echo IMAGE_ID=$IMAGE_ID
-          echo TAG=$TAG
-          docker tag attic-server:main "${IMAGE_ID}:${TAG}"
-          docker push ${IMAGE_ID}:${TAG}
-          if [ "$BRANCH" == "main" ]; then
-            TAG="latest"
-            docker tag attic-server:main "${IMAGE_ID}:${TAG}"
-            docker push ${IMAGE_ID}:${TAG}
-          fi
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: cachix/install-nix-action@v20
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - run: nix build -vL
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: attic-macos
+          path: |
+            result/bin/attic
+            result/bin/atticadm
+            result/bin/atticd
