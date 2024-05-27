@@ -1,0 +1,49 @@
+name: Rust
+
+on:
+  push:
+    branches: 
+      - '*'
+  pull_request:
+    branches: 
+      - '*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: cachix/install-nix-action@v20
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - run: nix build -vL
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: attic-ubuntu
+          path: |
+            result/bin/attic
+            result/bin/atticadm
+            result/bin/atticd
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: cachix/install-nix-action@v20
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - run: nix build -vL
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: attic-macos
+          path: |
+            result/bin/attic
+            result/bin/atticadm
+            result/bin/atticd

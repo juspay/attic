@@ -54,8 +54,11 @@ pub async fn run_garbage_collection_once(config: Config) -> Result<()> {
     tracing::info!("Running garbage collection...");
 
     let state = StateInner::new(config).await;
+    println!("run_time_based_garbage_collection");
     run_time_based_garbage_collection(&state).await?;
+    println!("run_reap_orphan_nars");
     run_reap_orphan_nars(&state).await?;
+    println!("run_reap_orphan_chunks");
     run_reap_orphan_chunks(&state).await?;
 
     Ok(())
@@ -69,7 +72,8 @@ async fn run_time_based_garbage_collection(state: &State) -> Result<()> {
     let default_retention_period = state.config.garbage_collection.default_retention_period;
     let retention_period =
         cache::Column::RetentionPeriod.if_null(default_retention_period.as_secs() as i32);
-
+    println!("retention_period : {:?}", retention_period);
+    println!("default_retention_period : {:?}", default_retention_period);
     // Find caches with retention periods set
     let caches = Cache::find()
         .select_only()
@@ -80,7 +84,7 @@ async fn run_time_based_garbage_collection(state: &State) -> Result<()> {
         .into_model::<CacheIdAndRetentionPeriod>()
         .all(db)
         .await?;
-
+    println!("Find caches with retention periods set : {:?}", caches);
     tracing::info!(
         "Found {} caches subject to time-based garbage collection",
         caches.len()
@@ -97,7 +101,8 @@ async fn run_time_based_garbage_collection(state: &State) -> Result<()> {
             )
         })?;
 
-        let deletion = Object::delete_many()
+        let ids_to_delete = Object::find()
+            .select_only()
             .filter(object::Column::CacheId.eq(cache.id))
             .filter(object::Column::CreatedAt.lt(cutoff))
             .filter(
@@ -105,16 +110,27 @@ async fn run_time_based_garbage_collection(state: &State) -> Result<()> {
                     .is_null()
                     .or(object::Column::LastAccessedAt.lt(cutoff)),
             )
-            .exec(db)
+            .all(db)
             .await?;
 
-        tracing::info!(
-            "Deleted {} objects from {} (ID {})",
-            deletion.rows_affected,
-            cache.name,
-            cache.id
+        println!(
+            "Found these cache objects which are ready to be removed : {:?}",
+            ids_to_delete.len().clone()
         );
-        objects_deleted += deletion.rows_affected;
+
+        for i in ids_to_delete.clone() {
+            match Object::delete_by_id(i.id).exec(db).await {
+                Ok(_) => {
+                    print!("deleted {:?}", i);
+                    time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    print!("unable to delete {:?} : {:?}", i, e);
+                }
+            }
+        }
+
+        objects_deleted += ids_to_delete.clone().len();
     }
 
     tracing::info!("Deleted {} objects in total", objects_deleted);
@@ -141,7 +157,6 @@ async fn run_reap_orphan_nars(state: &State) -> Result<()> {
         .and_where(nar::Column::HoldersCount.eq(0))
         .lock_with_tables_behavior(LockType::Update, [Nar], LockBehavior::SkipLocked)
         .to_owned();
-
     // ... and simply delete them
     let deletion = Nar::delete_many()
         .filter(nar::Column::Id.in_subquery(orphan_nar_ids))
